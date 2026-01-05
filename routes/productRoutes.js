@@ -1,12 +1,14 @@
 const express = require('express');
-const { createProduct, getProducts, deleteProduct, getProductById, updateProduct, shopifyProductDeleteWebhook, updateVariantQuantity, updateVariantPrice, getDashboardStats, getFullDashboard } = require('../controllers/productController');
+const { createProduct, getProducts, deleteProduct, getProductById, updateProduct, shopifyProductDeleteWebhook, updateVariantQuantity, updateVariantPrice, getDashboardStats, getFullDashboard, createProductAndPublishToMarket, createProductAndPublishToMarkets, getMarkets, getLocationsByMarketId } = require('../controllers/productController');
 const { authenticate } = require('../middleware/authMiddleware');
 const router = express.Router();
 
 // POST /api/products
 
-router.post("/",authenticate, createProduct);
+router.post("/",authenticate, createProductAndPublishToMarkets);
 router.get("/",authenticate, getProducts);
+router.get("/market/All",authenticate,getMarkets);
+router.get("/locations/byMarket/:marketId",getLocationsByMarketId)
 router.delete('/delete/:productId',authenticate, deleteProduct);
 router.get('/:productId',authenticate, getProductById);
 router.put('/update/:productId',authenticate, updateProduct);

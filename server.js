@@ -10,6 +10,7 @@ const profileRoutes = require('./routes/profileRoutes');
 const orderRoutes = require('./routes/orderRoutes')
 const productRoutes = require('./routes/productRoutes');
 const collectionRoutes = require('./routes/collectionRoutes');
+const commonRoutes = require("./routes/commonRoutes")
 
 const swaggerDocs = require('./docs/swagger');
 const cors = require('cors');
@@ -34,6 +35,7 @@ app.use('/api/V1/users', userRoutes);
 app.use('/api/V1/profile',profileRoutes);
 app.use('/api/V1/orders',orderRoutes)
 app.use("/api/V1/products", productRoutes);
+app.use("/api/V1/common",commonRoutes)
 app.use('/api/V1/collections',collectionRoutes)
 
 // swagger documentation 
