@@ -3,7 +3,11 @@ import Product from "../models/Product.js";
 import catchAsync from "../utils/catchAsync.js";
 import Order from "../models/Order.js";
 import User from "../models/User.js";
-import { transformShopifyProduct } from "../helper/productHelper.js";
+import { deleteShopifyProductById, transformShopifyProduct } from "../helper/productHelper.js";
+import shopifyClient from "../utils/shopifyClient.js";
+import { MARKET_CATALOG_QUERY } from "../graphql/queries/product.query.js";
+import { PUBLISH_PRODUCT_MUTATION } from "../graphql/mutations/product.mutation.js";
+import shopifyGraphql from "../utils/shopifyGraphql.js";
 
 // export const createProduct = async (req, res) => {
 //   try {
@@ -163,210 +167,58 @@ import { transformShopifyProduct } from "../helper/productHelper.js";
 // });
 
 export const createProductAndPublishToMarkets = async (req, res) => {
+  let createdProductId = null;
   try {
-    const {
-      product,
-      collectionIds = [],
-      marketIds = [], // array of target market IDs
-      inventoryByVariant = {}
-    } = req.body;
+    const { product, marketIds = [], inventoryByVariant = {}, collectionIds = [] } = req.body;
 
-    if (!marketIds.length) {
-      return res.status(400).json({ error: "Provide at least one marketId" });
-    }
+    // 1️ Create product
+    const { data } = await shopifyClient.post("/products.json", { product });
+    const shopifyProduct = data.product;
+    const productGid = `gid://shopify/Product/${shopifyProduct.id}`;
+    createdProductId = shopifyProduct.id
 
-    /* --------------------------------------------------
-     * 1. Separate metafields
-     * -------------------------------------------------- */
-    const metafields = product.metafields || [];
-    const cleanProduct = { ...product };
-    delete cleanProduct.metafields;
-
-    /* --------------------------------------------------
-     * 2. Enable inventory tracking
-     * -------------------------------------------------- */
-    cleanProduct.variants = cleanProduct.variants.map(v => ({
-      ...v,
-      inventory_management: "shopify",
-      inventory_policy: "deny"
-    }));
-
-    /* --------------------------------------------------
-     * 3. Create product (REST)
-     * -------------------------------------------------- */
-    const productRes = await axios.post(
-      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-10/products.json`,
-      { product: cleanProduct },
-      {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    const shopifyProduct = productRes.data.product;
-    const productId = shopifyProduct.id;
-    const productGid = `gid://shopify/Product/${productId}`;
-
-    /* --------------------------------------------------
-     * 4. Attach collections
-     * -------------------------------------------------- */
-    for (const cid of collectionIds) {
-      await axios.post(
-        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json`,
-        {
-          collect: {
-            product_id: productId,
-            collection_id: Number(cid)
-          }
-        },
-        {
-          headers: {
-            "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-    }
-
-    /* --------------------------------------------------
-     * 5. Create metafields
-     * -------------------------------------------------- */
-    for (const mf of metafields) {
-      await axios.post(
-        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/metafields.json`,
-        {
-          metafield: {
-            ...mf,
-            owner_resource: "product",
-            owner_id: productId
-          }
-        },
-        {
-          headers: {
-            "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-            "Content-Type": "application/json"
-          }
-        }
-      );
-    }
-
-    /* --------------------------------------------------
-     * 6. Set inventory PER LOCATION (REST)
-     * -------------------------------------------------- */
+    // 2️ Inventory
     for (const variant of shopifyProduct.variants) {
-      const sku = variant.sku;
-      if (!inventoryByVariant[sku]) continue;
-
-      for (const loc of inventoryByVariant[sku]) {
-        await axios.post(
-          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels/set.json`,
-          {
-            location_id: Number(loc.locationId.replace("gid://shopify/Location/", "")),
-            inventory_item_id: Number(variant.inventory_item_id),
-            available: loc.quantity
-          },
-          {
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-              "Content-Type": "application/json"
-            }
-          }
-        );
+      for (const loc of inventoryByVariant[variant.sku] || []) {
+        await shopifyClient.post("/inventory_levels/set.json", {
+          location_id: Number(loc.locationId.replace("gid://shopify/Location/", "")),
+          inventory_item_id: variant.inventory_item_id,
+          available: loc.quantity
+        });
       }
     }
 
-    /* --------------------------------------------------
-     * 7. Publish product to specified markets
-     * -------------------------------------------------- */
+    // 3️ Publish to markets
     for (const marketId of marketIds) {
-      // 7.1 Get the catalog publication for this market
-      const catalogsRes = await axios.post(
-        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/graphql.json`,
-        {
-          query: `
-            query MarketCatalogPublications($marketId: ID!, $firstCatalogs: Int = 10) {
-              market(id: $marketId) {
-                id
-                name
-                catalogs(first: $firstCatalogs) {
-                  nodes {
-                    id
-                    publication {
-                      id
-                    }
-                  }
-                }
-              }
-            }
-          `,
-          variables: { marketId }
-        },
-        {
-          headers: {
-            "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-            "Content-Type": "application/json"
+      const { data } = await shopifyGraphql.post("", {
+        query: MARKET_CATALOG_QUERY,
+        variables: { marketId }
+      });
+
+      const catalogs = data.data.market?.catalogs?.nodes || [];
+
+      for (const catalog of catalogs) {
+        await shopifyGraphql.post("", {
+          query: PUBLISH_PRODUCT_MUTATION,
+          variables: {
+            publicationId: catalog.publication.id,
+            productId: productGid
           }
-        }
-      );
-
-      const market = catalogsRes.data.data.market;
-      if (!market) continue;
-
-      for (const catalog of market.catalogs.nodes) {
-        const publicationId = catalog.publication.id;
-
-        // 7.2 Publish product to this catalog's publication
-        await axios.post(
-          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/graphql.json`,
-          {
-            query: `
-              mutation PublishProductToMarket($publicationId: ID!, $productId: ID!) {
-                publicationUpdate(
-                  id: $publicationId,
-                  input: { publishablesToAdd: [$productId] }
-                ) {
-                  publication { id }
-                  userErrors { field message }
-                }
-              }
-            `,
-            variables: { publicationId, productId: productGid }
-          },
-          {
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-              "Content-Type": "application/json"
-            }
-          }
-        );
+        });
       }
     }
-
-    /* --------------------------------------------------
-     * 8. Save locally
-     * -------------------------------------------------- */
-    await new Product({
-      shopifyId: productId,
-      title: shopifyProduct.title,
-      vendor_name: shopifyProduct.vendor,
-      price: shopifyProduct.variants[0]?.price || 0,
-      collectionIds,
-      marketIds
-    }).save();
 
     res.status(201).json({
-      message: "Product created and published to selected market(s)",
-      shopifyProductId: productId
+      message: "Product created & published",
+      shopifyProductId: shopifyProduct.id
     });
 
-  } catch (error) {
-    console.error(error.response?.data || error.message);
-    res.status(500).json({
-      error: "Product creation failed",
-      details: error.response?.data || error.message
-    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    if (createdProductId) {
+      await deleteShopifyProductById(createdProductId);
+    }
+    res.status(500).json({ error: "Product creation failed" });
   }
 };
 
@@ -588,183 +440,374 @@ export const deleteProduct = async (req, res) => {
   }
 };
 
-export const getProductById = async (req, res) => {
-  const { productId } = req.params
-  if (!productId) {
-    return res.status(500).json({ message: "productId is required" })
-  }
-  try {
-    const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`;
-    const response = await axios.get(apiUrl, {
-      headers: {
-        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-        "Content-Type": "application/json",
-      },
-    });
-    const data = await Product.findOne({ shopifyId: productId })
-    return res.status(200).json({ message: "Product details fetched successfully", data: { data: response.data.product, collectionIds: data?.collectionIds || [] } })
-  } catch (error) {
-    console.log(error)
-  }
-}
-
-// Assuming you're using async/await
-
 // export const getProductById = async (req, res) => {
-//   const { productId } = req.params;
-
-//   // Ensure productId is provided
+//   const { productId } = req.params
 //   if (!productId) {
-//     return res.status(400).json({ message: "productId is required" });
+//     return res.status(500).json({ message: "productId is required" })
 //   }
-
-//   // Shopify GraphQL endpoint
-//   const apiUrl = `https://itflowdev.myshopify.com/admin/api/2025-10/graphql.json`;
-
-//   // GraphQL query for product details
-//   const query = `
-//     query ProductWithInventoryPerLocation($id: ID!, $inventoryLevelsFirst: Int = 10) {
-//       product(id: $id) {
-//         id
-//         title
-//         totalInventory
-//         status
-//         vendor
-//         productType
-//         bodyHtml
-//         tags
-//         resourcePublicationsV2(first: 10, catalogType: MARKET) {
-//           edges {
-//             node {
-//               publication {
-//                 id
-//                 name
-//                 catalog {
-//                   __typename
-//                   ... on MarketCatalog {
-//                     markets(first: 10) {
-//                       edges {
-//                         node {
-//                           id
-//                           name
-//                         }
-//                       }
-//                     }
-//                   }
-//                 }
-//               }
-//             }
-//           }
-//         }
-//         variants(first: 50) {
-//           edges {
-//             node {
-//               id
-//               title
-//               sku
-//               price
-//               inventoryItem {
-//                 id
-//                 inventoryLevels(first: $inventoryLevelsFirst) {
-//                   edges {
-//                     node {
-//                       id
-//                       location {
-//                         id
-//                         name
-//                       }
-//                       quantities(names: ["available", "on_hand"]) {
-//                         name
-//                         quantity
-//                       }
-//                     }
-//                   }
-//                 }
-//               }
-//             }
-//           }
-//         }
-//       }
-//       markets(first: 20) {
-//         edges {
-//           node {
-//             id
-//             name
-//           }
-//         }
-//       }
-//     }
-//   `;
-
-//   // Prepare variables for the GraphQL request
-//   const variables = {
-//     id: `gid://shopify/Product/${productId}`,
-//     inventoryLevelsFirst: 50
-//   };
-
 //   try {
-//     // Perform the GraphQL request to Shopify
-//     const response = await axios.post(
-//       apiUrl,
-//       {
-//         query,
-//         variables
+//     const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`;
+//     const response = await axios.get(apiUrl, {
+//       headers: {
+//         "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//         "Content-Type": "application/json",
 //       },
-//       {
-//         headers: {
-//           "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-//           "Content-Type": "application/json"
-//         }
-//       }
-//     );
-//     // Transform the GraphQL response into the desired format
-//     const transformedData = transformShopifyProduct(response.data.data);
-
-//     return res.status(200).json({
-//       message: "Product details fetched successfully",
-//       data: {
-//         data: transformedData.product, // the product data transformed into the desired format
-//         collectionIds: data?.collectionIds || [] // Any additional collection info from DB
-//       }
 //     });
+//     const data = await Product.findOne({ shopifyId: productId })
+//     return res.status(200).json({ message: "Product details fetched successfully", data: { data: response.data.product, collectionIds: data?.collectionIds || [] } })
 //   } catch (error) {
-//     console.error("Error fetching product details:", error);
-//     return res.status(500).json({ message: "Error fetching product details" });
+//     console.log(error)
 //   }
-// };
+// }
 
-
-export const updateProduct = async (req, res) => {
+export const getProductById = async (req, res) => {
   const { productId } = req.params;
-  const { product, collectionIds, imagesToKeep } = req.body;
 
   if (!productId) {
     return res.status(400).json({ message: "productId is required" });
   }
 
   try {
-    // ---------------- CLEAN PRODUCT DATA ----------------
-    const cleanProduct = { ...product };
+    const headers = {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+      "Content-Type": "application/json",
+    };
 
-    // Remove metafields (Shopify doesn't allow update here)
-    delete cleanProduct.metafields;
+    /* ----------------------------------------------------
+      GET PRODUCT (REST)
+    ---------------------------------------------------- */
+    const productRes = await axios.get(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
+      { headers }
+    );
 
-    // Shopify deletes all images if empty array is sent — prevent that
-    if (!cleanProduct.images || cleanProduct.images.length === 0) {
-      delete cleanProduct.images;
+    const shopifyProduct = productRes.data.product;
+
+    /* ----------------------------------------------------
+     GET METAFIELDS (REST)
+    ---------------------------------------------------- */
+    const metafieldsRes = await axios.get(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/metafields.json`,
+      { headers }
+    );
+
+    const metafields = metafieldsRes.data.metafields.map((mf) => ({
+      namespace: mf.namespace,
+      key: mf.key,
+      type: mf.type,
+      value: mf.value,
+    }));
+
+    /* ----------------------------------------------------
+    BUILD PRODUCT PAYLOAD (MATCH CREATE FORMAT)
+    ---------------------------------------------------- */
+    const productPayload = {
+      title: shopifyProduct.title,
+      body_html: shopifyProduct.body_html,
+      vendor: shopifyProduct.vendor,
+      product_type: shopifyProduct.product_type,
+      tags: shopifyProduct.tags
+        ? shopifyProduct.tags.split(",").map((t) => t.trim())
+        : [],
+      metafields,
+      options: shopifyProduct.options.map((opt) => ({
+        name: opt.name,
+        values: opt.values,
+      })),
+      variants: shopifyProduct.variants.map((v) => ({
+        option1: v.option1,
+        option2: v.option2,
+        option3: v.option3,
+        price: v.price,
+        sku: v.sku,
+        tracked: v.tracked,
+      })),
+    };
+
+    /* ----------------------------------------------------
+        INVENTORY BY VARIANT & LOCATION
+    ---------------------------------------------------- */
+    const inventoryByVariant = {};
+
+    for (const variant of shopifyProduct.variants) {
+      const invRes = await axios.get(
+        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels.json`,
+        {
+          headers,
+          params: {
+            inventory_item_ids: variant.inventory_item_id,
+          },
+        }
+      );
+
+      inventoryByVariant[variant.sku] = invRes.data.inventory_levels.map(
+        (level) => ({
+          locationId: `gid://shopify/Location/${level.location_id}`,
+          quantity: level.available,
+        })
+      );
     }
 
-    // Enable Shopify inventory management
-    if (cleanProduct.variants && cleanProduct.variants.length > 0) {
+    /* ----------------------------------------------------
+     GET MARKET IDS (GRAPHQL)
+    ---------------------------------------------------- */
+    const marketRes = await shopifyGraphql.post("", {
+      query: `
+        query GetProductMarkets($id: ID!) {
+          product(id: $id) {
+            publications(first: 20) {
+              nodes {
+                catalog {
+                  market {
+                    id
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      variables: {
+        id: `gid://shopify/Product/${productId}`,
+      },
+    });
+
+    const publications =
+      marketRes?.data?.data?.product?.publications?.nodes || [];
+
+    const marketIds = publications
+      .map(p => p.catalog?.market?.id)
+      .filter(Boolean);
+
+
+    /* ----------------------------------------------------
+       GET COLLECTION IDS (FROM MONGODB)
+    ---------------------------------------------------- */
+    const mongoProduct = await Product.findOne({ shopifyId: productId });
+    const collectionIds = mongoProduct?.collectionIds || [];
+
+    /* ----------------------------------------------------
+       FINAL RESPONSE (SINGLE API)
+    ---------------------------------------------------- */
+    return res.status(200).json({
+      marketIds,
+      collectionIds,
+      product: productPayload,
+      inventoryByVariant,
+    });
+  } catch (error) {
+    console.error("GET PRODUCT ERROR:", error.response?.data || error.message);
+    return res.status(500).json({
+      message: "Failed to fetch product details",
+      error: error.response?.data || error.message,
+    });
+  }
+};
+
+
+// export const updateProduct = async (req, res) => {
+//   const { productId } = req.params;
+//   const { product, collectionIds, imagesToKeep } = req.body;
+
+//   if (!productId) {
+//     return res.status(400).json({ message: "productId is required" });
+//   }
+
+//   try {
+//     // ---------------- CLEAN PRODUCT DATA ----------------
+//     const cleanProduct = { ...product };
+
+//     // Remove metafields (Shopify doesn't allow update here)
+//     delete cleanProduct.metafields;
+
+//     // Shopify deletes all images if empty array is sent — prevent that
+//     if (!cleanProduct.images || cleanProduct.images.length === 0) {
+//       delete cleanProduct.images;
+//     }
+
+//     // Enable Shopify inventory management
+//     if (cleanProduct.variants && cleanProduct.variants.length > 0) {
+//       cleanProduct.variants = cleanProduct.variants.map((v) => ({
+//         ...v,
+//         inventory_management: "shopify",
+//       }));
+//     }
+
+//     // ---------------- UPDATE PRODUCT (BASIC FIELDS) ----------------
+//     const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`;
+
+//     const shopifyRes = await axios.put(
+//       apiUrl,
+//       { product: cleanProduct },
+//       {
+//         headers: {
+//           "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+
+//     const updatedShopifyProduct = shopifyRes.data.product;
+
+//     // ----------------------- IMAGE LOGIC ------------------------
+//     // Get existing images
+//     const existingRes = await axios.get(
+//       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/images.json`,
+//       {
+//         headers: {
+//           "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//         },
+//       }
+//     );
+
+//     // ---------------- UPDATE INVENTORY LEVELS ----------------
+//     const locationId = Number(process.env.SHOPIFY_LOCATION_ID);
+//     let totalStock = 0;
+
+//     for (const variant of updatedShopifyProduct.variants) {
+//       const match = cleanProduct.variants?.find(
+//         (v) => v.sku === variant.sku || v.id === variant.id
+//       );
+
+//       const qtyToSet = match?.inventory_quantity ?? 0;
+
+//       await axios.post(
+//         `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels/set.json`,
+//         {
+//           location_id: locationId,
+//           inventory_item_id: variant.inventory_item_id,
+//           available: qtyToSet,
+//         },
+//         {
+//           headers: {
+//             "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//             "Content-Type": "application/json",
+//           },
+//         }
+//       );
+
+//       totalStock += qtyToSet;
+//     }
+
+//     // ---------------- UPDATE COLLECTION IDS ----------------
+//     const existingCollectsRes = await axios.get(
+//       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json?product_id=${productId}`,
+//       {
+//         headers: {
+//           "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//         },
+//       }
+//     );
+
+//     const existingCollects = existingCollectsRes.data.collects;
+
+//     // Remove any old collections not in new list
+//     for (const collect of existingCollects) {
+//       if (!collectionIds?.includes(Number(collect.collection_id))) {
+//         await axios.delete(
+//           `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects/${collect.id}.json`,
+//           {
+//             headers: {
+//               "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//             },
+//           }
+//         );
+//       }
+//     }
+
+//     // Add new collection mappings
+//     for (const cid of collectionIds || []) {
+//       const exists = existingCollects.some(
+//         (c) => Number(c.collection_id) === Number(cid)
+//       );
+
+//       if (!exists) {
+//         await axios.post(
+//           `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json`,
+//           {
+//             collect: {
+//               product_id: Number(productId),
+//               collection_id: Number(cid),
+//             },
+//           },
+//           {
+//             headers: {
+//               "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+//               "Content-Type": "application/json",
+//             },
+//           }
+//         );
+//       }
+//     }
+
+//     // ---------------- UPDATE MONGODB ----------------
+//     const updatedProduct = await Product.findOneAndUpdate(
+//       { shopifyId: productId },
+//       {
+//         title: updatedShopifyProduct.title,
+//         price: updatedShopifyProduct.variants?.[0]?.price || null,
+//         vendor_name: updatedShopifyProduct.vendor,
+//         collectionIds: collectionIds || [],
+//         stock: totalStock,
+//       },
+//       { new: true }
+//     );
+
+//     res.status(200).json({
+//       message: "Product updated successfully",
+//       data: {
+//         shopify: updatedShopifyProduct,
+//         mongo: updatedProduct,
+//       },
+//     });
+
+//   } catch (err) {
+//     console.error("UPDATE ERROR:", err.response?.data || err.message);
+//     res.status(err.response?.status || 500).json({
+//       error: "Failed to update product",
+//       details: err.response?.data || err.message,
+//     });
+//   }
+// };
+
+export const updateProduct = async (req, res) => {
+  const { productId } = req.params;
+  const { product, collectionIds = [], imagesToKeep = [] } = req.body;
+
+  if (!productId) {
+    return res.status(400).json({ message: "productId is required" });
+  }
+
+  // Keep track of original state for rollback if needed
+  let originalShopifyProduct = null;
+
+  try {
+    // ---------------- GET ORIGINAL PRODUCT ----------------
+    const getRes = await axios.get(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
+      {
+        headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
+      }
+    );
+    originalShopifyProduct = getRes.data.product;
+
+    // ---------------- CLEAN PRODUCT DATA ----------------
+    const cleanProduct = { ...product };
+    delete cleanProduct.metafields;
+
+    if (!cleanProduct.images || cleanProduct.images.length === 0) {
+      delete cleanProduct.images; // prevent Shopify from deleting all images
+    }
+
+    if (cleanProduct.variants?.length) {
       cleanProduct.variants = cleanProduct.variants.map((v) => ({
         ...v,
         inventory_management: "shopify",
       }));
     }
 
-    // ---------------- UPDATE PRODUCT (BASIC FIELDS) ----------------
+    // ---------------- UPDATE PRODUCT ----------------
     const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`;
-
     const shopifyRes = await axios.put(
       apiUrl,
       { product: cleanProduct },
@@ -778,18 +821,7 @@ export const updateProduct = async (req, res) => {
 
     const updatedShopifyProduct = shopifyRes.data.product;
 
-    // ----------------------- IMAGE LOGIC ------------------------
-    // Get existing images
-    const existingRes = await axios.get(
-      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/images.json`,
-      {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-        },
-      }
-    );
-
-    // ---------------- UPDATE INVENTORY LEVELS ----------------
+    // ---------------- UPDATE INVENTORY ----------------
     const locationId = Number(process.env.SHOPIFY_LOCATION_ID);
     let totalStock = 0;
 
@@ -818,58 +850,41 @@ export const updateProduct = async (req, res) => {
       totalStock += qtyToSet;
     }
 
-    // ---------------- UPDATE COLLECTION IDS ----------------
+    // ---------------- UPDATE COLLECTIONS ----------------
     const existingCollectsRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json?product_id=${productId}`,
       {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-        },
+        headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
       }
     );
 
     const existingCollects = existingCollectsRes.data.collects;
 
-    // Remove any old collections not in new list
+    // Delete old collections not in new list
     for (const collect of existingCollects) {
-      if (!collectionIds?.includes(Number(collect.collection_id))) {
+      if (!collectionIds.includes(Number(collect.collection_id))) {
         await axios.delete(
           `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects/${collect.id}.json`,
           {
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-            },
+            headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
           }
         );
       }
     }
 
-    // Add new collection mappings
-    for (const cid of collectionIds || []) {
-      const exists = existingCollects.some(
-        (c) => Number(c.collection_id) === Number(cid)
-      );
-
+    // Add new collections
+    for (const cid of collectionIds) {
+      const exists = existingCollects.some((c) => Number(c.collection_id) === Number(cid));
       if (!exists) {
         await axios.post(
           `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json`,
-          {
-            collect: {
-              product_id: Number(productId),
-              collection_id: Number(cid),
-            },
-          },
-          {
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-              "Content-Type": "application/json",
-            },
-          }
+          { collect: { product_id: Number(productId), collection_id: Number(cid) } },
+          { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN, "Content-Type": "application/json" } }
         );
       }
     }
 
-    // ---------------- UPDATE MONGODB ----------------
+    // ---------------- UPDATE MONGO ----------------
     const updatedProduct = await Product.findOneAndUpdate(
       { shopifyId: productId },
       {
@@ -889,9 +904,28 @@ export const updateProduct = async (req, res) => {
         mongo: updatedProduct,
       },
     });
-
   } catch (err) {
     console.error("UPDATE ERROR:", err.response?.data || err.message);
+
+    // ---------------- ROLLBACK ----------------
+    if (originalShopifyProduct) {
+      try {
+        console.log("Rolling back Shopify product to original state");
+        await axios.put(
+          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
+          { product: originalShopifyProduct },
+          {
+            headers: {
+              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+      } catch (rollbackErr) {
+        console.error("Rollback failed:", rollbackErr.response?.data || rollbackErr.message);
+      }
+    }
+
     res.status(err.response?.status || 500).json({
       error: "Failed to update product",
       details: err.response?.data || err.message,
@@ -1298,18 +1332,37 @@ export const getDashboardStats = async (req, res) => {
 export const getMarkets = async (req, res) => {
   try {
     const response = await axios.post(
-     `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/graphql.json`,
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/graphql.json`,
       {
         query: `
-          query {
-            markets(first: 50) {
-              nodes {
+          query GetMarketsWithCountries {
+  markets(first: 10) {
+    nodes {
+      id
+      name
+      primary
+      enabled
+      currencySettings {
+        baseCurrency {
+          currencyCode
+        }
+      }
+      conditions {
+        regionsCondition {
+          regions(first: 50) {
+            nodes {
+              ... on MarketRegionCountry {
                 id
                 name
-                enabled
+                code
               }
             }
           }
+        }
+      }
+    }
+  }
+}
         `
       },
       {
@@ -1331,7 +1384,6 @@ export const getMarkets = async (req, res) => {
     });
   }
 };
-
 
 export const getLocationsByMarketId = async (req, res) => {
   const { marketId } = req.params;
@@ -1371,7 +1423,7 @@ export const getLocationsByMarketId = async (req, res) => {
           }
         `,
         variables: {
-          marketId:`gid://shopify/Market/${marketId}`
+          marketId: `gid://shopify/Market/${marketId}`
         }
       },
       {
@@ -1412,7 +1464,6 @@ export const getLocationsByMarketId = async (req, res) => {
     });
   }
 };
-
 
 // // STEP 2 — Get shop locations
 // const locationsResponse = await axios.get(

@@ -1,5 +1,6 @@
 const express = require('express');
 const dotenv = require('dotenv');
+dotenv.config();
 const connectDB = require('./config/db');
 // routes imports
 const authRoutes = require('./routes/authRoutes');
@@ -17,7 +18,6 @@ const cors = require('cors');
 const errorHandler = require('./middleware/errorHandler');
 const clc = require('cli-color');
 const morgan = require('morgan');
-dotenv.config();
 connectDB();
 
 const app = express();

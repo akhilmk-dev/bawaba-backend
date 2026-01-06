@@ -92,3 +92,27 @@ export const transformShopifyProduct = (response) =>{
     };
   }
   
+  export const deleteShopifyProductById = async (productId) => {
+  if (!productId) return;
+
+  const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-10/products/${productId}.json`;
+
+  try {
+    await axios.delete(apiUrl, {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    // Optional: delete from MongoDB if exists
+    // await Product.findOneAndDelete({ shopifyId: productId });
+
+    console.log(`Rollback: deleted product ${productId}`);
+  } catch (err) {
+    console.error(
+      "Rollback failed:",
+      err.response?.data || err.message
+    );
+  }
+};
