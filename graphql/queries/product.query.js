@@ -36,3 +36,41 @@ export const PRODUCT_BY_ID_QUERY = `
     }
   }
 `;
+
+export const PRODUCT_MARKETS_QUERY = `
+  query ProductMarkets($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      resourcePublicationsV2(catalogType: MARKET, first: 50) {
+        nodes {
+          publication {
+            id
+            catalog {
+              __typename
+              ... on MarketCatalog {
+                markets(first: 50) {
+                  nodes {
+                    id
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+export const PUBLISH_TO_CATALOG = `
+mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
+  publishablePublish(id: $id, publicationId: $publicationId) {
+    userErrors {
+      field
+      message
+    }
+  }
+}
+`;

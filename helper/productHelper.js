@@ -1,3 +1,5 @@
+import axios from "axios";
+
 export const transformShopifyProduct = (response) =>{
     const product = response.product;
   

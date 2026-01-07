@@ -5,7 +5,7 @@ import Order from "../models/Order.js";
 import User from "../models/User.js";
 import { deleteShopifyProductById, transformShopifyProduct } from "../helper/productHelper.js";
 import shopifyClient from "../utils/shopifyClient.js";
-import { MARKET_CATALOG_QUERY } from "../graphql/queries/product.query.js";
+import { MARKET_CATALOG_QUERY, PRODUCT_MARKETS_QUERY, PUBLISH_TO_CATALOG } from "../graphql/queries/product.query.js";
 import { PUBLISH_PRODUCT_MUTATION } from "../graphql/mutations/product.mutation.js";
 import shopifyGraphql from "../utils/shopifyGraphql.js";
 
@@ -460,34 +460,6 @@ export const deleteProduct = async (req, res) => {
 //   }
 // }
 
-
-const PRODUCT_MARKETS_QUERY = `
-  query ProductMarkets($id: ID!) {
-    product(id: $id) {
-      id
-      title
-      resourcePublicationsV2(catalogType: MARKET, first: 50) {
-        nodes {
-          publication {
-            id
-            catalog {
-              __typename
-              ... on MarketCatalog {
-                markets(first: 50) {
-                  nodes {
-                    id
-                    name
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-`;
-
 export const getProductById = async (req, res) => {
   const { productId } = req.params;
 
@@ -502,7 +474,7 @@ export const getProductById = async (req, res) => {
     };
 
     /* ----------------------------------------------------
-       1️⃣ GET PRODUCT (REST)
+    GET PRODUCT (REST)
     ---------------------------------------------------- */
     const productRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
@@ -512,7 +484,7 @@ export const getProductById = async (req, res) => {
     const shopifyProduct = productRes.data.product;
 
     /* ----------------------------------------------------
-       2️⃣ GET METAFIELDS (REST)
+      GET METAFIELDS (REST)
     ---------------------------------------------------- */
     const metafieldsRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/metafields.json`,
@@ -790,18 +762,6 @@ export const getProductById = async (req, res) => {
 //     });
 //   }
 // };
-
-/* ---------------- GRAPHQL: PUBLISH TO MARKET ---------------- */
-const PUBLISH_TO_CATALOG = `
-  mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
-    publishablePublish(id: $id, publicationId: $publicationId) {
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
 
 export const updateProduct = async (req, res) => {
   const { productId } = req.params;
@@ -1523,31 +1483,55 @@ export const getLocationsByMarketId = async (req, res) => {
   }
 };
 
-// // STEP 2 — Get shop locations
-// const locationsResponse = await axios.get(
-//   `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/locations.json`,
-//   {
-//     headers: {
-//       "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-//     },
-//   }
-// );
-// const locationId = locationsResponse.data.locations[0].id;
-
-// // STEP 3 — Set inventory level NOW VALID
-// const quantity = Number(product.variants?.[0]?.inventory_quantity || 0);
-
-// await axios.post(
-//   `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels/set.json`,
-//   {
-//     location_id: locationId,
-//     inventory_item_id: inventoryItemId,
-//     available: quantity,
-//   },
-//   {
-//     headers: {
-//       "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-//       "Content-Type": "application/json",
-//     },
-//   }
-// );
+export const getProvinces = async (req, res) => {
+  try {
+    const response = await axios.post(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/graphql.json`,
+      {
+        query: `
+          query GetProvinceSelectorOptions {
+  metafieldDefinitions(
+    first: 1
+    ownerType: PRODUCT
+    namespace: "availability"
+    key: "provinces_oman"
+  ) {
+    edges {
+      node {
+        id
+        name
+        namespace
+        key
+        type {
+          name
+        }
+        validations {
+          name
+          value
+        }
+      }
+    }
+  }
+}
+        `
+      },
+      {
+        headers: {
+          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    console.log(response.data.data)
+    const result = JSON.parse(response.data.data.metafieldDefinitions.edges?.[0]?.node?.validations?.[0].value) || []
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message
+    });
+  }
+};

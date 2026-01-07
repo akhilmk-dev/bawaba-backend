@@ -1,5 +1,5 @@
 const express = require('express');
-const { createProduct, getProducts, deleteProduct, getProductById, updateProduct, shopifyProductDeleteWebhook, updateVariantQuantity, updateVariantPrice, getDashboardStats, getFullDashboard, createProductAndPublishToMarket, createProductAndPublishToMarkets, getMarkets, getLocationsByMarketId } = require('../controllers/productController');
+const { createProduct, getProducts, deleteProduct, getProductById, updateProduct, shopifyProductDeleteWebhook, updateVariantQuantity, updateVariantPrice, getDashboardStats, getFullDashboard, createProductAndPublishToMarket, createProductAndPublishToMarkets, getMarkets, getLocationsByMarketId, getProvinces } = require('../controllers/productController');
 const { authenticate } = require('../middleware/authMiddleware');
 const router = express.Router();
 
@@ -8,6 +8,7 @@ const router = express.Router();
 router.post("/",authenticate, createProductAndPublishToMarkets);
 router.get("/",authenticate, getProducts);
 router.get("/market/All",authenticate,getMarkets);
+router.get("/province/all",getProvinces);
 router.get("/locations/byMarket/:marketId",getLocationsByMarketId)
 router.delete('/delete/:productId',authenticate, deleteProduct);
 router.get('/:productId',authenticate, getProductById);
