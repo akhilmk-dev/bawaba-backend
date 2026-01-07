@@ -170,7 +170,7 @@ export const createProductAndPublishToMarkets = async (req, res) => {
   let createdProductId = null;
   try {
     const { product, marketIds = [], inventoryByVariant = {}, collectionIds = [] } = req.body;
-
+     console.log(product)
     // 1️ Create product
     const { data } = await shopifyClient.post("/products.json", { product });
     const shopifyProduct = data.product;
@@ -460,6 +460,34 @@ export const deleteProduct = async (req, res) => {
 //   }
 // }
 
+
+const PRODUCT_MARKETS_QUERY = `
+  query ProductMarkets($id: ID!) {
+    product(id: $id) {
+      id
+      title
+      resourcePublicationsV2(catalogType: MARKET, first: 50) {
+        nodes {
+          publication {
+            id
+            catalog {
+              __typename
+              ... on MarketCatalog {
+                markets(first: 50) {
+                  nodes {
+                    id
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 export const getProductById = async (req, res) => {
   const { productId } = req.params;
 
@@ -474,7 +502,7 @@ export const getProductById = async (req, res) => {
     };
 
     /* ----------------------------------------------------
-      GET PRODUCT (REST)
+       1️⃣ GET PRODUCT (REST)
     ---------------------------------------------------- */
     const productRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
@@ -484,7 +512,7 @@ export const getProductById = async (req, res) => {
     const shopifyProduct = productRes.data.product;
 
     /* ----------------------------------------------------
-     GET METAFIELDS (REST)
+       2️⃣ GET METAFIELDS (REST)
     ---------------------------------------------------- */
     const metafieldsRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/metafields.json`,
@@ -499,13 +527,15 @@ export const getProductById = async (req, res) => {
     }));
 
     /* ----------------------------------------------------
-    BUILD PRODUCT PAYLOAD (MATCH CREATE FORMAT)
+      BUILD PRODUCT PAYLOAD (CREATE/UPDATE FORMAT)
     ---------------------------------------------------- */
     const productPayload = {
+      id:shopifyProduct.id,
       title: shopifyProduct.title,
       body_html: shopifyProduct.body_html,
       vendor: shopifyProduct.vendor,
       product_type: shopifyProduct.product_type,
+      images: shopifyProduct.images,
       tags: shopifyProduct.tags
         ? shopifyProduct.tags.split(",").map((t) => t.trim())
         : [],
@@ -525,7 +555,7 @@ export const getProductById = async (req, res) => {
     };
 
     /* ----------------------------------------------------
-        INVENTORY BY VARIANT & LOCATION
+      INVENTORY BY VARIANT & LOCATION
     ---------------------------------------------------- */
     const inventoryByVariant = {};
 
@@ -549,45 +579,37 @@ export const getProductById = async (req, res) => {
     }
 
     /* ----------------------------------------------------
-     GET MARKET IDS (GRAPHQL)
+       GET MARKET IDS (GraphQL – CORRECT WAY)
     ---------------------------------------------------- */
     const marketRes = await shopifyGraphql.post("", {
-      query: `
-        query GetProductMarkets($id: ID!) {
-          product(id: $id) {
-            publications(first: 20) {
-              nodes {
-                catalog {
-                  market {
-                    id
-                  }
-                }
-              }
-            }
-          }
-        }
-      `,
+      query: PRODUCT_MARKETS_QUERY,
       variables: {
         id: `gid://shopify/Product/${productId}`,
       },
     });
 
-    const publications =
-      marketRes?.data?.data?.product?.publications?.nodes || [];
+    const marketIdsSet = new Set();
 
-    const marketIds = publications
-      .map(p => p.catalog?.market?.id)
-      .filter(Boolean);
+    const nodes =
+      marketRes?.data?.data?.product?.resourcePublicationsV2?.nodes || [];
 
+    nodes.forEach((node) => {
+      const markets = node?.publication?.catalog?.markets?.nodes || [];
+      markets.forEach((market) => {
+        marketIdsSet.add(market.id);
+      });
+    });
+
+    const marketIds = Array.from(marketIdsSet);
 
     /* ----------------------------------------------------
-       GET COLLECTION IDS (FROM MONGODB)
+      GET COLLECTION IDS (MONGODB)
     ---------------------------------------------------- */
     const mongoProduct = await Product.findOne({ shopifyId: productId });
     const collectionIds = mongoProduct?.collectionIds || [];
 
     /* ----------------------------------------------------
-       FINAL RESPONSE (SINGLE API)
+       FINAL SINGLE-API RESPONSE
     ---------------------------------------------------- */
     return res.status(200).json({
       marketIds,
@@ -603,7 +625,6 @@ export const getProductById = async (req, res) => {
     });
   }
 };
-
 
 // export const updateProduct = async (req, res) => {
 //   const { productId } = req.params;
@@ -770,75 +791,190 @@ export const getProductById = async (req, res) => {
 //   }
 // };
 
+/* ---------------- GRAPHQL: PUBLISH TO MARKET ---------------- */
+const PUBLISH_TO_CATALOG = `
+  mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
+    publishablePublish(id: $id, publicationId: $publicationId) {
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
 export const updateProduct = async (req, res) => {
   const { productId } = req.params;
-  const { product, collectionIds = [], imagesToKeep = [] } = req.body;
+  const {
+    product,
+    inventoryByVariant = {},
+    collectionIds = [],
+    marketIds = []
+  } = req.body;
 
   if (!productId) {
     return res.status(400).json({ message: "productId is required" });
   }
 
-  // Keep track of original state for rollback if needed
-  let originalShopifyProduct = null;
+  let originalProduct = null;
 
   try {
-    // ---------------- GET ORIGINAL PRODUCT ----------------
-    const getRes = await axios.get(
+    const headers = {
+      "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
+      "Content-Type": "application/json",
+    };
+
+    /* --------------------------------------------------
+        BACKUP PRODUCT (ROLLBACK SAFETY)
+    -------------------------------------------------- */
+    const originalRes = await axios.get(
       `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
-      {
-        headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
-      }
+      { headers }
     );
-    originalShopifyProduct = getRes.data.product;
+    originalProduct = originalRes.data.product;
 
-    // ---------------- CLEAN PRODUCT DATA ----------------
-    const cleanProduct = { ...product };
-    delete cleanProduct.metafields;
+    /* --------------------------------------------------
+        UPDATE PRODUCT CORE (REST)
+    -------------------------------------------------- */
+    const cleanProduct = {
+      title: product.title,
+      body_html: product.body_html,
+      vendor: product.vendor,
+      product_type: product.product_type,
+      tags: product.tags?.join(","),
+      options: product.options,
+      variants: product.variants.map(v => ({
+        option1: v.option1,
+        option2: v.option2,
+        option3: v.option3,
+        price: v.price,
+        sku: v.sku,
+        inventory_management: "shopify"
+      }))
+    };
 
-    if (!cleanProduct.images || cleanProduct.images.length === 0) {
-      delete cleanProduct.images; // prevent Shopify from deleting all images
-    }
-
-    if (cleanProduct.variants?.length) {
-      cleanProduct.variants = cleanProduct.variants.map((v) => ({
-        ...v,
-        inventory_management: "shopify",
-      }));
-    }
-
-    // ---------------- UPDATE PRODUCT ----------------
-    const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`;
-    const shopifyRes = await axios.put(
-      apiUrl,
+    const updateRes = await axios.put(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
       { product: cleanProduct },
-      {
-        headers: {
-          "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-          "Content-Type": "application/json",
-        },
-      }
+      { headers }
     );
 
-    const updatedShopifyProduct = shopifyRes.data.product;
+    const updatedShopifyProduct = updateRes.data.product;
 
-    // ---------------- UPDATE INVENTORY ----------------
-    const locationId = Number(process.env.SHOPIFY_LOCATION_ID);
+    /* --------------------------------------------------
+     UPDATE METAFIELDS
+    -------------------------------------------------- */
+    if (product.metafields?.length) {
+      for (const mf of product.metafields) {
+        await axios.post(
+          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}/metafields.json`,
+          { metafield: mf },
+          { headers }
+        );
+      }
+    }
+
+    /* --------------------------------------------------
+        UPDATE INVENTORY (PER VARIANT, PER LOCATION)
+    -------------------------------------------------- */
     let totalStock = 0;
 
     for (const variant of updatedShopifyProduct.variants) {
-      const match = cleanProduct.variants?.find(
-        (v) => v.sku === variant.sku || v.id === variant.id
+      const inventoryList = inventoryByVariant[variant.sku] || [];
+
+      for (const inv of inventoryList) {
+        const locationId = Number(inv.locationId.replace("gid://shopify/Location/", ""));
+
+        await axios.post(
+          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels/set.json`,
+          {
+            inventory_item_id: variant.inventory_item_id,
+            location_id: locationId,
+            available: inv.quantity
+          },
+          { headers }
+        );
+
+        totalStock += inv.quantity;
+      }
+    }
+
+    /* --------------------------------------------------
+      UPDATE COLLECTIONS
+    -------------------------------------------------- */
+    const existingCollectsRes = await axios.get(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json?product_id=${productId}`,
+      { headers }
+    );
+
+    const existingCollects = existingCollectsRes.data.collects;
+
+    // Remove old
+    for (const collect of existingCollects) {
+      if (!collectionIds.includes(Number(collect.collection_id))) {
+        await axios.delete(
+          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects/${collect.id}.json`,
+          { headers }
+        );
+      }
+    }
+
+    // Add new
+    for (const cid of collectionIds) {
+      const exists = existingCollects.some(
+        c => Number(c.collection_id) === Number(cid)
       );
+      if (!exists) {
+        await axios.post(
+          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json`,
+          { collect: { product_id: Number(productId), collection_id: Number(cid) } },
+          { headers }
+        );
+      }
+    }
 
-      const qtyToSet = match?.inventory_quantity ?? 0;
+    /* --------------------------------------------------
+      UPDATE MARKETS (PUBLISH)
+    -------------------------------------------------- */
+    const productGid = `gid://shopify/Product/${productId}`;
 
-      await axios.post(
-        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/inventory_levels/set.json`,
-        {
-          location_id: locationId,
-          inventory_item_id: variant.inventory_item_id,
-          available: qtyToSet,
-        },
+    for (const marketId of marketIds) {
+      const catalogRes = await shopifyGraphql.post("", {
+        query: MARKET_CATALOG_QUERY,
+        variables: { id: marketId }
+      });
+
+      const catalogs =
+        catalogRes?.data?.data?.market?.catalogs?.nodes || [];
+
+      for (const catalog of catalogs) {
+        await shopifyGraphql.post("", {
+          query: PUBLISH_TO_CATALOG,
+          variables: {
+            id: productGid,
+            publicationId: catalog.publication.id
+          }
+        });
+      }
+    }
+
+    return res.status(200).json({
+      message: "Product updated successfully",
+      data: {
+        shopify: updatedShopifyProduct
+      }
+    });
+
+  } catch (error) {
+    console.error("UPDATE ERROR:", error);
+
+    /* --------------------------------------------------
+       ROLLBACK
+    -------------------------------------------------- */
+    if (originalProduct) {
+      await axios.put(
+        `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
+        { product: originalProduct },
         {
           headers: {
             "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
@@ -846,89 +982,11 @@ export const updateProduct = async (req, res) => {
           },
         }
       );
-
-      totalStock += qtyToSet;
     }
 
-    // ---------------- UPDATE COLLECTIONS ----------------
-    const existingCollectsRes = await axios.get(
-      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json?product_id=${productId}`,
-      {
-        headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
-      }
-    );
-
-    const existingCollects = existingCollectsRes.data.collects;
-
-    // Delete old collections not in new list
-    for (const collect of existingCollects) {
-      if (!collectionIds.includes(Number(collect.collection_id))) {
-        await axios.delete(
-          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects/${collect.id}.json`,
-          {
-            headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN },
-          }
-        );
-      }
-    }
-
-    // Add new collections
-    for (const cid of collectionIds) {
-      const exists = existingCollects.some((c) => Number(c.collection_id) === Number(cid));
-      if (!exists) {
-        await axios.post(
-          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/collects.json`,
-          { collect: { product_id: Number(productId), collection_id: Number(cid) } },
-          { headers: { "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN, "Content-Type": "application/json" } }
-        );
-      }
-    }
-
-    // ---------------- UPDATE MONGO ----------------
-    const updatedProduct = await Product.findOneAndUpdate(
-      { shopifyId: productId },
-      {
-        title: updatedShopifyProduct.title,
-        price: updatedShopifyProduct.variants?.[0]?.price || null,
-        vendor_name: updatedShopifyProduct.vendor,
-        collectionIds: collectionIds || [],
-        stock: totalStock,
-      },
-      { new: true }
-    );
-
-    res.status(200).json({
-      message: "Product updated successfully",
-      data: {
-        shopify: updatedShopifyProduct,
-        mongo: updatedProduct,
-      },
-    });
-  } catch (err) {
-    console.error("UPDATE ERROR:", err.response?.data || err.message);
-
-    // ---------------- ROLLBACK ----------------
-    if (originalShopifyProduct) {
-      try {
-        console.log("Rolling back Shopify product to original state");
-        await axios.put(
-          `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
-          { product: originalShopifyProduct },
-          {
-            headers: {
-              "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-      } catch (rollbackErr) {
-        console.error("Rollback failed:", rollbackErr.response?.data || rollbackErr.message);
-      }
-    }
-
-    res.status(err.response?.status || 500).json({
+    return res.status(500).json({
       error: "Failed to update product",
-      details: err.response?.data || err.message,
+      details: error.response?.data || error.message,
     });
   }
 };
