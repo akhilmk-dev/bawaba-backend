@@ -74,3 +74,132 @@ mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
   }
 }
 `;
+
+export const GET_ALL_Product =  `
+query GetProducts($first: Int!, $after: String, $query: String) {
+products(first: $first, after: $after, query: $query) {
+edges {
+ node {
+   id
+   legacyResourceId
+   title
+   handle
+   vendor
+   productType
+   tags
+   status
+   descriptionHtml
+   createdAt
+   updatedAt
+   options {
+     id
+     name
+     values
+   }
+   images(first: 20) {
+     edges {
+       node {
+         id
+         src
+         altText
+         width
+         height
+       }
+     }
+   }
+   variants(first: 50) {
+     edges {
+       node {
+         id
+         title
+         sku
+         price
+         compareAtPrice
+         inventoryQuantity
+         availableForSale
+         selectedOptions {
+           name
+           value
+         }
+         barcode
+         image {
+           id
+           src
+           altText
+         }
+         unitPrice {
+           amount
+           currencyCode
+         }
+         unitPriceMeasurement {
+           measuredType
+           quantityUnit
+         }
+       }
+     }
+   }
+ }
+}
+pageInfo {
+ hasNextPage
+ endCursor
+}
+}
+}
+`
+export const GET_PROVINCES=  `
+query GetProvinceSelectorOptions {
+metafieldDefinitions(
+first: 1
+ownerType: PRODUCT
+namespace: "availability"
+key: "provinces_oman"
+) {
+edges {
+node {
+id
+name
+namespace
+key
+type {
+name
+}
+validations {
+name
+value
+}
+}
+}
+}
+}
+`
+export const GET_MARKETS =  `
+query GetMarketsWithCountries {
+markets(first: 10) {
+nodes {
+id
+name
+primary
+enabled
+currencySettings {
+baseCurrency {
+currencyCode
+}
+}
+conditions {
+regionsCondition {
+regions(first: 50) {
+  nodes {
+    ... on MarketRegionCountry {
+      id
+      name
+      code
+    }
+  }
+}
+}
+}
+}
+}
+}
+`

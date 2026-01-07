@@ -1,4 +1,6 @@
 import axios from "axios";
+import Order from "../models/Order.js"; 
+import shopifyClient from "../utils/shopifyClient.js";
 
 export const transformShopifyProduct = (response) =>{
     const product = response.product;
@@ -96,16 +98,8 @@ export const transformShopifyProduct = (response) =>{
   
   export const deleteShopifyProductById = async (productId) => {
   if (!productId) return;
-
-  const apiUrl = `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-10/products/${productId}.json`;
-
   try {
-    await axios.delete(apiUrl, {
-      headers: {
-        "X-Shopify-Access-Token": process.env.SHOPIFY_TOKEN,
-        "Content-Type": "application/json",
-      },
-    });
+    await shopifyClient.delete(`/products/${productId}.json`);
 
     // Optional: delete from MongoDB if exists
     // await Product.findOneAndDelete({ shopifyId: productId });
@@ -118,3 +112,80 @@ export const transformShopifyProduct = (response) =>{
     );
   }
 };
+
+export async function getShopifyProductsCount(vendor) {
+  try {
+    const res = await shopifyClient.get(`/products/count.json${vendor ? `?vendor=${vendor}` : ''}`);
+    return res.data?.count || 0;
+  } catch (error) {
+    console.error("Shopify Products Error:", error.message);
+    return 0;
+  }
+}
+
+export async function getShopifyCustomersCount() {
+  try {
+    const res = await shopifyClient.get(`customers/count.json`);
+    return res.data?.count || 0;
+  } catch (error) {
+    console.error("Shopify Products Error:", error.message);
+    return 0;
+  }
+}
+
+// GET 5 Recent Shopify Products
+export async function getRecentShopifyProducts(vendor) {
+  try {
+    const res = await shopifyClient.get(`/products.json?limit=5&order=created_at desc${vendor ? `&vendor=${vendor}` : ''}`);
+    return res.data?.products || [];
+  } catch (error) {
+    console.error("Recent Products Error:", error.message);
+    return [];
+  }
+}
+
+export async function getTotalEarnings(vendorName = null) {
+  let filter = {
+    deleted_at: { $in: [null, undefined] },
+    financial_status: "paid"
+  };
+
+  const orders = await Order.find(filter).lean();
+
+  let total = 0;
+
+  orders.forEach(order => {
+    order.line_items.forEach(item => {
+      if (!vendorName || item.vendor_name === vendorName) {
+        total += Number(item.price) * Number(item.quantity);
+      }
+    });
+  });
+
+  return total;
+}
+
+export async function getRecentOrders(vendorName = null) {
+  let filter = { deleted_at: { $in: [null, undefined] } };
+
+  if (vendorName) {
+    filter["line_items.vendor_name"] = vendorName;
+  }
+
+  return await Order.find(filter)
+    .sort({ created_at: -1 })
+    .limit(5)
+    .lean();
+}
+
+export async function getTotalOrdersCount(vendorName = null) {
+  let filter = {
+    deleted_at: { $in: [null, undefined] }
+  };
+
+  if (vendorName) {
+    filter["line_items.vendor_name"] = vendorName;
+  }
+
+  return await Order.countDocuments(filter);
+}
