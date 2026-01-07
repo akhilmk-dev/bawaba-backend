@@ -170,12 +170,20 @@ export const createProductAndPublishToMarkets = async (req, res) => {
   let createdProductId = null;
   try {
     const { product, marketIds = [], inventoryByVariant = {}, collectionIds = [] } = req.body;
-     console.log(product)
     // 1️ Create product
     const { data } = await shopifyClient.post("/products.json", { product });
     const shopifyProduct = data.product;
     const productGid = `gid://shopify/Product/${shopifyProduct.id}`;
     createdProductId = shopifyProduct.id
+
+    for (const collectionId of collectionIds) {
+      await shopifyClient.post("/collects.json", {
+        collect: {
+          product_id: createdProductId,
+          collection_id: collectionId
+        }
+      });
+    }
 
     // 2️ Inventory
     for (const variant of shopifyProduct.variants) {
@@ -477,10 +485,15 @@ export const getProductById = async (req, res) => {
     GET PRODUCT (REST)
     ---------------------------------------------------- */
     const productRes = await axios.get(
-      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-07/products/${productId}.json`,
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-10/products/${productId}.json`,
       { headers }
     );
 
+    const collectionRes = await axios.get(
+      `${process.env.SHOPIFY_BASE_URL}/admin/api/2025-10/collects.json?product_id=${productId}`,
+      { headers }
+    );
+    const collectionIds = collectionRes.data.collects?.map(item=>item?.collection_id)
     const shopifyProduct = productRes.data.product;
 
     /* ----------------------------------------------------
@@ -578,7 +591,6 @@ export const getProductById = async (req, res) => {
       GET COLLECTION IDS (MONGODB)
     ---------------------------------------------------- */
     const mongoProduct = await Product.findOne({ shopifyId: productId });
-    const collectionIds = mongoProduct?.collectionIds || [];
 
     /* ----------------------------------------------------
        FINAL SINGLE-API RESPONSE
