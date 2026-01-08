@@ -359,6 +359,7 @@ export const updateProduct = async (req, res) => {
       body_html: product.body_html,
       vendor: product.vendor,
       product_type: product.product_type,
+      status : product.status,
       tags: product.tags?.join(","),
       options: product.options,
       variants: product.variants.map(v => ({
