@@ -414,23 +414,30 @@ export const updateProduct = async (req, res) => {
     const existingCollectsRes = await shopifyClient.get(`/collects.json?product_id=${productId}`);
     const existingCollects = existingCollectsRes.data.collects;
 
-    // Remove old
-    for (const collect of existingCollects) {
-      if (!collectionIds.includes(Number(collect.collection_id))) {
-        await shopifyClient.delete(`/collects/${collect.id}.json`);
-      }
+    const existingCollectionIds = existingCollects.map(c => Number(c.collection_id));
+    const desiredCollectionIds = collectionIds.map(id => Number(id));
+    
+    const toDelete = existingCollects.filter(
+      c => !desiredCollectionIds.includes(Number(c.collection_id))
+    );
+    
+    const toAdd = desiredCollectionIds.filter(
+      id => !existingCollectionIds.includes(id)
+    );
+    
+    // Delete
+    for (const collect of toDelete) {
+      await shopifyClient.delete(`/collects/${collect.id}.json`);
     }
-
-    // Add new
-    for (const cid of collectionIds) {
-      const exists = existingCollects.some(
-        c => Number(c.collection_id) === Number(cid)
-      );
-      if (!exists) {
-        await shopifyClient.post(`/collects.json`,
-          { collect: { product_id: Number(productId), collection_id: Number(cid) } }
-        );
-      }
+    
+    // Add
+    for (const cid of toAdd) {
+      await shopifyClient.post(`/collects.json`, {
+        collect: {
+          product_id: Number(productId),
+          collection_id: cid,
+        },
+      });
     }
 
     /* --------------------------------------------------
