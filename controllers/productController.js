@@ -242,6 +242,7 @@ export const getProductById = async (req, res) => {
       vendor: shopifyProduct.vendor,
       product_type: shopifyProduct.product_type,
       images: shopifyProduct.images,
+      status: shopifyProduct.status,
       tags: shopifyProduct.tags
         ? shopifyProduct.tags.split(",").map((t) => t.trim())
         : [],
