@@ -92,9 +92,7 @@ export const getProducts = catchAsync(async (req, res, next) => {
       variables: {
         first: limit,
         after: pageInfo,
-        query: queryString || null,
-        sortKey: CREATED_AT,
-        reverse: true
+        query: queryString || null
       },
     };
 

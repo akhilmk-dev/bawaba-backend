@@ -75,7 +75,7 @@ mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
 }
 `;
 
-export const GET_ALL_PRODUCTS = `
+export const GET_ALL_Product = `
 query GetProducts($first: Int!, $after: String, $query: String) {
   products(
     first: $first
