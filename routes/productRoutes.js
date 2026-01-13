@@ -5,7 +5,7 @@ const router = express.Router();
 
 // POST /api/products
 router.post("/",authenticate, createProductAndPublishToMarkets);
-router.get("/",authenticate, getProducts);
+router.get("/", getProducts);
 router.get("/market/All",authenticate,getMarkets);
 router.get("/province/all",authenticate,getProvinces);
 router.delete('/delete/:productId',authenticate, deleteProduct);

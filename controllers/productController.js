@@ -88,16 +88,18 @@ export const getProducts = catchAsync(async (req, res, next) => {
     if (vendor_name) queryString += queryString ? ` AND vendor:"${vendor_name}"` : `vendor:"${vendor_name}"`;
 
     const graphQLQuery = {
-      query:  GET_ALL_Product,
+      query: GET_ALL_Product,
       variables: {
         first: limit,
         after: pageInfo,
         query: queryString || null,
+        sortKey: CREATED_AT,
+        reverse: true
       },
     };
 
     const response = await shopifyGraphql.post("",
-      graphQLQuery 
+      graphQLQuery
     );
 
     const productsData = response.data.data.products;
@@ -162,6 +164,7 @@ export const getProducts = catchAsync(async (req, res, next) => {
     const totalCountResponse = await shopifyClient.get(`/products/count.json`);
     const totalProductCount = totalCountResponse.data.count;
     const nextPageInfo = productsData.pageInfo.hasNextPage ? productsData.pageInfo.endCursor : null;
+    const hasNextPage = productsData.pageInfo.hasNextPage
 
     res.status(200).json({
       status: "success",
@@ -169,6 +172,7 @@ export const getProducts = catchAsync(async (req, res, next) => {
       total: products.length,
       totalPages: totalProductCount,
       nextPageInfo,
+      hasNextPage,
       data: products,
     });
   } catch (error) {
@@ -217,7 +221,7 @@ export const getProductById = async (req, res) => {
     const productRes = await shopifyClient.get(`/products/${productId}.json`);
 
     const collectionRes = await shopifyClient.get(`/collects.json?product_id=${productId}`);
-    const collectionIds = collectionRes.data.collects?.map(item=>item?.collection_id)
+    const collectionIds = collectionRes.data.collects?.map(item => item?.collection_id)
     const shopifyProduct = productRes.data.product;
 
     /* ----------------------------------------------------
@@ -236,7 +240,7 @@ export const getProductById = async (req, res) => {
       BUILD PRODUCT PAYLOAD (CREATE/UPDATE FORMAT)
     ---------------------------------------------------- */
     const productPayload = {
-      id:shopifyProduct.id,
+      id: shopifyProduct.id,
       title: shopifyProduct.title,
       body_html: shopifyProduct.body_html,
       vendor: shopifyProduct.vendor,
@@ -267,11 +271,11 @@ export const getProductById = async (req, res) => {
     const inventoryByVariant = {};
 
     for (const variant of shopifyProduct.variants) {
-      const invRes = await shopifyClient.get("/inventory_levels.json",{
-          params: {
-            inventory_item_ids: variant.inventory_item_id,
-          },
-        }
+      const invRes = await shopifyClient.get("/inventory_levels.json", {
+        params: {
+          inventory_item_ids: variant.inventory_item_id,
+        },
+      }
       );
 
       inventoryByVariant[variant.sku] = invRes.data.inventory_levels.map(
@@ -359,7 +363,7 @@ export const updateProduct = async (req, res) => {
       body_html: product.body_html,
       vendor: product.vendor,
       product_type: product.product_type,
-      status : product.status,
+      status: product.status,
       tags: product.tags?.join(","),
       options: product.options,
       variants: product.variants.map(v => ({
@@ -372,7 +376,7 @@ export const updateProduct = async (req, res) => {
       }))
     };
 
-    const updateRes = await shopifyClient.put(`/products/${productId}.json`,{ product: cleanProduct });
+    const updateRes = await shopifyClient.put(`/products/${productId}.json`, { product: cleanProduct });
 
     const updatedShopifyProduct = updateRes.data.product;
 
@@ -381,7 +385,7 @@ export const updateProduct = async (req, res) => {
     -------------------------------------------------- */
     if (product.metafields?.length) {
       for (const mf of product.metafields) {
-        await shopifyClient.post(`/products/${productId}/metafields.json`,{ metafield: mf });
+        await shopifyClient.post(`/products/${productId}/metafields.json`, { metafield: mf });
       }
     }
 
@@ -416,20 +420,20 @@ export const updateProduct = async (req, res) => {
 
     const existingCollectionIds = existingCollects.map(c => Number(c.collection_id));
     const desiredCollectionIds = collectionIds.map(id => Number(id));
-    
+
     const toDelete = existingCollects.filter(
       c => !desiredCollectionIds.includes(Number(c.collection_id))
     );
-    
+
     const toAdd = desiredCollectionIds.filter(
       id => !existingCollectionIds.includes(id)
     );
-    
+
     // Delete
     for (const collect of toDelete) {
       await shopifyClient.delete(`/collects/${collect.id}.json`);
     }
-    
+
     // Add
     for (const cid of toAdd) {
       await shopifyClient.post(`/collects.json`, {
@@ -479,7 +483,7 @@ export const updateProduct = async (req, res) => {
        ROLLBACK
     -------------------------------------------------- */
     if (originalProduct) {
-      await shopifyClient.put(`/products/${productId}.json`,{ product: originalProduct });
+      await shopifyClient.put(`/products/${productId}.json`, { product: originalProduct });
     }
 
     return res.status(500).json({
@@ -779,7 +783,7 @@ export const getDashboardStats = async (req, res) => {
 
 export const getMarkets = async (req, res) => {
   try {
-    const response = await shopifyGraphql.post("",{query: GET_MARKETS});
+    const response = await shopifyGraphql.post("", { query: GET_MARKETS });
     res.status(200).json({
       success: true,
       markets: response.data.data.markets.nodes
@@ -794,7 +798,7 @@ export const getMarkets = async (req, res) => {
 
 export const getProvinces = async (req, res) => {
   try {
-    const response = await shopifyGraphql.post("",{query: GET_PROVINCES } );
+    const response = await shopifyGraphql.post("", { query: GET_PROVINCES });
     const result = JSON.parse(response.data.data.metafieldDefinitions.edges?.[0]?.node?.validations?.[0].value) || []
     res.status(200).json({
       success: true,
