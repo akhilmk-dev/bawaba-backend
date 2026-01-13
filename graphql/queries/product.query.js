@@ -75,80 +75,86 @@ mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
 }
 `;
 
-export const GET_ALL_Product =  `
+export const GET_ALL_PRODUCTS = `
 query GetProducts($first: Int!, $after: String, $query: String) {
-products(first: $first, after: $after, query: $query,sortKey: CREATED_AT,
-  reverse: true) {
-edges {
- node {
-   id
-   legacyResourceId
-   title
-   handle
-   vendor
-   productType
-   tags
-   status
-   descriptionHtml
-   createdAt
-   updatedAt
-   options {
-     id
-     name
-     values
-   }
-   images(first: 20) {
-     edges {
-       node {
-         id
-         src
-         altText
-         width
-         height
-       }
-     }
-   }
-   variants(first: 50) {
-     edges {
-       node {
-         id
-         title
-         sku
-         price
-         compareAtPrice
-         inventoryQuantity
-         availableForSale
-         selectedOptions {
-           name
-           value
-         }
-         barcode
-         image {
-           id
-           src
-           altText
-         }
-         unitPrice {
-           amount
-           currencyCode
-         }
-         unitPriceMeasurement {
-           measuredType
-           quantityUnit
-         }
-       }
-     }
-   }
- }
+  products(
+    first: $first
+    after: $after
+    query: $query
+    sortKey: CREATED_AT
+    reverse: true
+  ) {
+    edges {
+      node {
+        id
+        legacyResourceId
+        title
+        handle
+        vendor
+        productType
+        tags
+        status
+        descriptionHtml
+        createdAt
+        updatedAt
+        options {
+          id
+          name
+          values
+        }
+        images(first: 20) {
+          edges {
+            node {
+              id
+              src
+              altText
+              width
+              height
+            }
+          }
+        }
+        variants(first: 50) {
+          edges {
+            node {
+              id
+              title
+              sku
+              price
+              compareAtPrice
+              inventoryQuantity
+              availableForSale
+              selectedOptions {
+                name
+                value
+              }
+              barcode
+              image {
+                id
+                src
+                altText
+              }
+              unitPrice {
+                amount
+                currencyCode
+              }
+              unitPriceMeasurement {
+                measuredType
+                quantityUnit
+              }
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
 }
-pageInfo {
- hasNextPage
- endCursor
-}
-}
-}
-`
-export const GET_PROVINCES=  `
+`;
+
+export const GET_PROVINCES = `
 query GetProvinceSelectorOptions {
 metafieldDefinitions(
 first: 1
@@ -174,7 +180,7 @@ value
 }
 }
 `
-export const GET_MARKETS =  `
+export const GET_MARKETS = `
 query GetMarketsWithCountries {
 markets(first: 10) {
 nodes {
