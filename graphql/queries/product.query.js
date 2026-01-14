@@ -76,15 +76,24 @@ mutation PublishToCatalog($id: ID!, $publicationId: ID!) {
 `;
 
 export const GET_ALL_Product = `
-query GetProducts($first: Int!, $after: String, $query: String) {
+query GetProducts(
+  $first: Int
+  $last: Int
+  $after: String
+  $before: String
+  $query: String
+) {
   products(
     first: $first
+    last: $last
     after: $after
+    before: $before
     query: $query
     sortKey: CREATED_AT
     reverse: true
   ) {
     edges {
+      cursor
       node {
         id
         legacyResourceId
@@ -147,7 +156,9 @@ query GetProducts($first: Int!, $after: String, $query: String) {
       }
     }
     pageInfo {
+      hasPreviousPage
       hasNextPage
+      startCursor
       endCursor
     }
   }

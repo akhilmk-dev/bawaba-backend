@@ -73,110 +73,55 @@ export const createProductAndPublishToMarkets = async (req, res) => {
   }
 };
 
-export const getProducts = catchAsync(async (req, res, next) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const pageInfo = req.query.page_info || null;
-    const user = await User.findById(req.user?.id)?.populate('role');
-    let { search, vendor_name } = req.query;
-    if (user?.role?.role_name?.toLowerCase() == "vendor") {
-      vendor_name = user.name
-    }
-    // Build GraphQL query string
-    let queryString = "";
-    if (search) queryString += `title:*${search}*`;
-    if (vendor_name) queryString += queryString ? ` AND vendor:"${vendor_name}"` : `vendor:"${vendor_name}"`;
+export const getProducts = catchAsync(async (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  const user = await User.findById(req.user?.id)?.populate("role");
 
-    const graphQLQuery = {
-      query: GET_ALL_Product,
-      variables: {
-        first: limit,
-        after: pageInfo,
-        query: queryString || null
-      },
-    };
+  let { search, vendor_name, after, before } = req.query;
 
-    const response = await shopifyGraphql.post("",
-      graphQLQuery
-    );
-
-    const productsData = response.data.data.products;
-    const edges = productsData.edges || [];
-
-    const products = edges.map(e => {
-      const product = e.node;
-
-      // Format the product response
-      const formattedProduct = {
-        id: product.id,
-        legacyResourceId: product.legacyResourceId,
-        title: product.title,
-        handle: product.handle,
-        vendor: product.vendor,
-        productType: product.productType,
-        tags: product.tags,
-        status: product.status,
-        descriptionHtml: product.descriptionHtml,
-        createdAt: product.createdAt,
-        updatedAt: product.updatedAt,
-        options: product.options.map(option => ({
-          name: option.name,
-          values: option.values,
-        })),
-        images: product.images.edges.map(image => ({
-          src: image.node.src,
-          altText: image.node.altText,
-          width: image.node.width,
-          height: image.node.height,
-        })),
-        variants: product.variants.edges.map(variant => ({
-          id: variant.node.id,
-          title: variant.node.title,
-          sku: variant.node.sku,
-          price: variant.node.price,
-          compareAtPrice: variant.node.compareAtPrice,
-          inventoryQuantity: variant.node.inventoryQuantity,
-          availableForSale: variant.node.availableForSale,
-          selectedOptions: variant.node.selectedOptions,
-          barcode: variant.node.barcode,
-          image: variant.node.image ? {
-            src: variant.node.image.src,
-            altText: variant.node.image.altText
-          } : null,
-          unitPrice: variant.node.unitPrice ? {
-            amount: variant.node.unitPrice.amount,
-            currencyCode: variant.node.unitPrice.currencyCode
-          } : null,
-          unitPriceMeasurement: variant.node.unitPriceMeasurement
-            ? {
-              measuredType: variant.node.unitPriceMeasurement.measuredType,
-              quantityUnit: variant.node.unitPriceMeasurement.quantityUnit
-            }
-            : null
-        }))
-      };
-
-      return formattedProduct;
-    });
-    // products count
-    const totalCountResponse = await shopifyClient.get(`/products/count.json`);
-    const totalProductCount = totalCountResponse.data.count;
-    const nextPageInfo = productsData.pageInfo.hasNextPage ? productsData.pageInfo.endCursor : null;
-    const hasNextPage = productsData.pageInfo.hasNextPage
-
-    res.status(200).json({
-      status: "success",
-      limit,
-      total: products.length,
-      totalPages: totalProductCount,
-      nextPageInfo,
-      hasNextPage,
-      data: products,
-    });
-  } catch (error) {
-    next()
+  if (user?.role?.role_name?.toLowerCase() === "vendor") {
+    vendor_name = user.name;
   }
+
+  // Build query
+  let queryString = "";
+  if (search) queryString += `title:*${search}*`;
+  if (vendor_name)
+    queryString += queryString
+      ? ` AND vendor:"${vendor_name.replace(/"/g, '\\"')}"`
+      : `vendor:"${vendor_name.replace(/"/g, '\\"')}"`;
+
+  let variables = {
+    query: queryString || null,
+  };
+
+  if (after) {
+    variables.first = limit;
+    variables.after = after;
+  } else if (before) {
+    variables.last = limit;
+    variables.before = before;
+  } else {
+    variables.first = limit; // initial load
+  }
+
+  const response = await shopifyGraphql.post("", {
+    query: GET_ALL_Product,
+    variables,
+  });
+
+  const productsData = response.data.data.products;
+  const totalCountResponse = await shopifyClient.get("/products/count.json"); 
+  const totalProductCount = totalCountResponse.data.count;
+  res.status(200).json({
+    status: "success",
+    data: productsData.edges.map(e => e.node),
+    pageInfo: productsData.pageInfo,
+    total: productsData?.edges.map(e => e.node).length,
+    totalPages: totalProductCount,
+  });
 });
+
 
 export const deleteProduct = async (req, res) => {
   const { productId } = req.params;
